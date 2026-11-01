@@ -1,6 +1,7 @@
 package com.gerson.cowork.entity;
 
 import com.gerson.cowork.enums.ReservationStatus;
+import com.gerson.cowork.state.ReservationStates;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -54,4 +55,18 @@ public class Reservation {
 	// Guards against lost updates on state transitions (confirm / cancel / complete)
 	@Version
 	private Long version;
+
+	// Transitions are delegated to the State pattern so the entity can never reach an invalid status
+
+	public void confirm() {
+		this.status = ReservationStates.of(status).confirm().status();
+	}
+
+	public void cancel() {
+		this.status = ReservationStates.of(status).cancel().status();
+	}
+
+	public void complete() {
+		this.status = ReservationStates.of(status).complete().status();
+	}
 }
