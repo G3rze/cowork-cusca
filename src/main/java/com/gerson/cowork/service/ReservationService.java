@@ -45,12 +45,15 @@ public class ReservationService {
 	}
 
 	/**
-	 * Overlaps are not checked here: a check-then-insert would race with a concurrent request. The insert is
-	 * attempted and the database exclusion constraint, which is atomic, decides.
+	 * Overlaps are not checked with a query: a check-then-insert would race with a concurrent request. Instead
+	 * the space row is locked to queue concurrent reservations of that space (avoiding the deadlocks that
+	 * simultaneous inserts against an exclusion constraint can cause), and the insert is attempted: the
+	 * database exclusion constraint, which is atomic, is the final arbiter. The timeout bounds how long a
+	 * request may hold its connection waiting for the lock.
 	 */
-	@Transactional
+	@Transactional(timeout = 5)
 	public ReservationResponse create(AuthenticatedUser principal, ReservationCreateRequest request) {
-		Space space = spaceRepository.findById(request.spaceId())
+		Space space = spaceRepository.findByIdForUpdate(request.spaceId())
 				.orElseThrow(() -> new ResourceNotFoundException("Space", request.spaceId()));
 		User user = userRepository.findById(principal.id())
 				.orElseThrow(() -> new ResourceNotFoundException("User", principal.id()));
