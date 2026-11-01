@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cowork-db
+    environment:
+      POSTGRES_DB: cowork
+      POSTGRES_USER: cowork
+      POSTGRES_PASSWORD: cowork
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cowork -d cowork"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: cowork-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cowork
+      SPRING_DATASOURCE_USERNAME: cowork
+      SPRING_DATASOURCE_PASSWORD: cowork
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
