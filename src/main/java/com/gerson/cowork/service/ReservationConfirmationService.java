@@ -1,6 +1,7 @@
 package com.gerson.cowork.service;
 
 import com.gerson.cowork.entity.Reservation;
+import com.gerson.cowork.event.ReservationConfirmedEvent;
 import com.gerson.cowork.exception.PaymentDeclinedException;
 import com.gerson.cowork.exception.ResourceNotFoundException;
 import com.gerson.cowork.mapper.ReservationMapper;
@@ -8,6 +9,7 @@ import com.gerson.cowork.payment.PaymentGateway;
 import com.gerson.cowork.payment.PaymentResult;
 import com.gerson.cowork.repository.ReservationRepository;
 import com.gerson.cowork.security.AuthenticatedUser;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -38,16 +40,18 @@ public class ReservationConfirmationService {
 	private final ReservationAccess reservationAccess;
 	private final ReservationMapper reservationMapper;
 	private final PaymentGateway paymentGateway;
+	private final ApplicationEventPublisher eventPublisher;
 	private final TransactionTemplate readTx;
 	private final TransactionTemplate writeTx;
 
 	public ReservationConfirmationService(ReservationRepository reservationRepository,
 			ReservationAccess reservationAccess, ReservationMapper reservationMapper, PaymentGateway paymentGateway,
-			PlatformTransactionManager transactionManager) {
+			PlatformTransactionManager transactionManager, ApplicationEventPublisher eventPublisher) {
 		this.reservationRepository = reservationRepository;
 		this.reservationAccess = reservationAccess;
 		this.reservationMapper = reservationMapper;
 		this.paymentGateway = paymentGateway;
+		this.eventPublisher = eventPublisher;
 		this.readTx = new TransactionTemplate(transactionManager);
 		this.readTx.setReadOnly(true);
 		this.readTx.setTimeout(TX_TIMEOUT_SECONDS);
@@ -74,6 +78,15 @@ public class ReservationConfirmationService {
 				case APPROVED -> {
 					reservation.confirm();
 					reservation.setPaymentReference(payment.reference());
+					// Delivered to listeners only if this transaction commits
+					eventPublisher.publishEvent(new ReservationConfirmedEvent(
+							reservation.getId(),
+							reservation.getUser().getName(),
+							reservation.getUser().getEmail(),
+							reservation.getSpace().getName(),
+							reservation.getStartAt(),
+							reservation.getEndAt(),
+							reservation.getTotalPrice()));
 					yield new ConfirmationResult(reservationMapper.toResponse(reservation), true);
 				}
 				case DECLINED -> throw new PaymentDeclinedException(payment.reason());

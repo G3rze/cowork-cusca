@@ -6,6 +6,7 @@ import com.gerson.cowork.entity.Reservation;
 import com.gerson.cowork.entity.Space;
 import com.gerson.cowork.entity.User;
 import com.gerson.cowork.enums.Role;
+import com.gerson.cowork.event.ReservationCancelledEvent;
 import com.gerson.cowork.exception.OverlappingReservationException;
 import com.gerson.cowork.exception.ResourceNotFoundException;
 import com.gerson.cowork.mapper.ReservationMapper;
@@ -14,6 +15,7 @@ import com.gerson.cowork.repository.ReservationRepository;
 import com.gerson.cowork.repository.SpaceRepository;
 import com.gerson.cowork.repository.UserRepository;
 import com.gerson.cowork.security.AuthenticatedUser;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -35,16 +37,18 @@ public class ReservationService {
 	private final PriceCalculator priceCalculator;
 	private final ReservationMapper reservationMapper;
 	private final ReservationAccess reservationAccess;
+	private final ApplicationEventPublisher eventPublisher;
 
 	public ReservationService(ReservationRepository reservationRepository, SpaceRepository spaceRepository,
 			UserRepository userRepository, PriceCalculator priceCalculator, ReservationMapper reservationMapper,
-			ReservationAccess reservationAccess) {
+			ReservationAccess reservationAccess, ApplicationEventPublisher eventPublisher) {
 		this.reservationRepository = reservationRepository;
 		this.spaceRepository = spaceRepository;
 		this.userRepository = userRepository;
 		this.priceCalculator = priceCalculator;
 		this.reservationMapper = reservationMapper;
 		this.reservationAccess = reservationAccess;
+		this.eventPublisher = eventPublisher;
 	}
 
 	/**
@@ -98,6 +102,7 @@ public class ReservationService {
 	public ReservationResponse cancel(AuthenticatedUser principal, UUID id) {
 		Reservation reservation = findAccessible(principal, id);
 		reservation.cancel();
+		eventPublisher.publishEvent(new ReservationCancelledEvent(reservation.getId(), reservation.getSpace().getId()));
 		return reservationMapper.toResponse(reservation);
 	}
 

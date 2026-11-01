@@ -18,7 +18,7 @@ class JwtServiceTest {
 	private static final String OTHER_SECRET = "T1RIRVJfU0VDUkVUX0tFWV9GT1JfVEVTVElOR19QVVJQT1NFU19PTkxZXzAxMjM0NTY3ODk=";
 
 	private JwtService serviceWith(String secret, Duration expiration) {
-		return new JwtService(new AppProperties(new AppProperties.Jwt(secret, expiration), null, null));
+		return new JwtService(new AppProperties(new AppProperties.Jwt(secret, expiration), null, null, null));
 	}
 
 	private User user() {

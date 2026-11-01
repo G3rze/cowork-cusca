@@ -51,14 +51,21 @@ abstract class AbstractIntegrationTest {
 		return loginToken(ADMIN_EMAIL, ADMIN_PASSWORD);
 	}
 
+	protected record TestUser(String email, String token) {
+	}
+
 	/** Registers a fresh USER through the public endpoint and returns its token. */
 	protected String userToken() throws Exception {
+		return newUser().token();
+	}
+
+	protected TestUser newUser() throws Exception {
 		String email = uniqueEmail();
 		mockMvc.perform(post("/api/v1/auth/register")
 						.contentType(MediaType.APPLICATION_JSON)
 						.content(json(Map.of("name", "Test User", "email", email, "password", PASSWORD))))
 				.andExpect(status().isCreated());
-		return loginToken(email, PASSWORD);
+		return new TestUser(email, loginToken(email, PASSWORD));
 	}
 
 	protected static String bearer(String token) {

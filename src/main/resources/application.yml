@@ -19,6 +19,11 @@ spring:
     locations: classpath:db/migration
 
 app:
+  # Daily operating window: denominator of the occupancy report (times are in the given zone)
+  business-hours:
+    opening: ${APP_BUSINESS_OPENING:08:00}
+    closing: ${APP_BUSINESS_CLOSING:18:00}
+    zone: ${APP_BUSINESS_ZONE:America/El_Salvador}
   payment:
     base-url: ${APP_PAYMENT_BASE_URL:http://localhost:8080/mock/payments}
     connect-timeout: 1s
@@ -61,3 +66,10 @@ management:
   health:
     circuitbreakers:
       enabled: true
+
+spring.cache:
+  type: caffeine
+  cache-names: occupancy
+  caffeine:
+    # Safety net: entries are also evicted explicitly whenever a reservation changes
+    spec: maximumSize=200,expireAfterWrite=10m

@@ -1,5 +1,6 @@
 package com.gerson.cowork.integration;
 
+import com.gerson.cowork.notification.EmailSender;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import com.zaxxer.hikari.HikariDataSource;
@@ -10,6 +11,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -25,6 +29,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.time.Duration;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -32,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.hamcrest.Matchers.is;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -66,6 +73,24 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 	private static final AtomicReference<HikariDataSource> dataSourceRef = new AtomicReference<>();
 	private static volatile long handlerDelayMillis = 0;
 	private static final HttpServer server = startServer();
+
+	/** Slow, recording replacement for the email sender, to prove notifications are asynchronous. */
+	record SentEmail(String to, String subject, Thread thread) {
+	}
+
+	static final List<SentEmail> sentEmails = new CopyOnWriteArrayList<>();
+
+	@TestConfiguration
+	static class SlowEmailSenderConfig {
+		@Bean
+		@Primary
+		EmailSender slowEmailSender() {
+			return (to, subject, body) -> {
+				sleep(1_500);
+				sentEmails.add(new SentEmail(to, subject, Thread.currentThread()));
+			};
+		}
+	}
 
 	@Autowired
 	private CircuitBreakerRegistry circuitBreakerRegistry;
@@ -143,6 +168,7 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 		maxInFlight.set(0);
 		maxDbConnectionsDuringCall.set(0);
 		lastIdempotencyKey.set(null);
+		sentEmails.clear();
 		dataSourceRef.set((HikariDataSource) dataSource);
 		circuitBreakerRegistry.circuitBreaker("payment").reset();
 	}
@@ -348,5 +374,44 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 						.content("{}"))
 				.andExpect(status().isBadRequest())
 				.andExpect(jsonPath("$.fieldErrors.paymentMethod").exists());
+	}
+
+	/** Emails are asynchronous, so a late one from a previous test may still arrive: only look at our own. */
+	private List<SentEmail> emailsTo(String recipient) {
+		return sentEmails.stream().filter(email -> email.to().equals(recipient)).toList();
+	}
+
+	@Test
+	void confirmationEmailIsSentAsynchronouslyAfterCommit() throws Exception {
+		TestUser user = newUser();
+		String reservationId = reserve(user.token(), newSpace(), 0);
+
+		long started = System.nanoTime();
+		confirm(user.token(), reservationId).andExpect(status().isOk());
+		long elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+		// The email takes 1.5 s to send, but the HTTP response does not wait for it
+		assertThat(elapsedMillis).isLessThan(1_000);
+		assertThat(emailsTo(user.email())).isEmpty();
+		await().atMost(Duration.ofSeconds(6)).untilAsserted(() -> assertThat(emailsTo(user.email())).hasSize(1));
+		SentEmail email = emailsTo(user.email()).get(0);
+		assertThat(email.subject()).startsWith("Reservation confirmed");
+		assertThat(email.thread().isVirtual()).isTrue();
+		assertThat(email.thread().getName()).startsWith("notification-");
+	}
+
+	@Test
+	void noEmailIsSentWhenTheConfirmationDoesNotHappen() throws Exception {
+		TestUser user = newUser();
+		String spaceId = newSpace();
+
+		behavior.set(Behavior.DECLINE);
+		confirm(user.token(), reserve(user.token(), spaceId, 0)).andExpect(status().isPaymentRequired());
+		behavior.set(Behavior.ERROR);
+		confirm(user.token(), reserve(user.token(), spaceId, 1)).andExpect(status().isAccepted());
+
+		// Wait longer than the email would take if one had been triggered
+		Thread.sleep(2_200);
+		assertThat(emailsTo(user.email())).isEmpty();
 	}
 }

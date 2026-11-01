@@ -40,6 +40,7 @@ public class SecurityConfig {
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/spaces/**").hasAnyRole(Role.ADMIN.name(), Role.USER.name())
 						.requestMatchers("/api/v1/spaces/**").hasRole(Role.ADMIN.name())
+						.requestMatchers("/api/v1/reports/**").hasRole(Role.ADMIN.name())
 						.anyRequest().authenticated())
 				.addFilterBefore(new JwtAuthenticationFilter(jwtService), UsernamePasswordAuthenticationFilter.class);
 		return http.build();
