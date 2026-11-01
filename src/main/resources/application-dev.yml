@@ -1,0 +1,11 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/cowork}
+    username: ${SPRING_DATASOURCE_USERNAME:cowork}
+    password: ${SPRING_DATASOURCE_PASSWORD:cowork}
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    com.gerson.cowork: DEBUG
