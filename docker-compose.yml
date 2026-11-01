@@ -27,6 +27,10 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cowork
       SPRING_DATASOURCE_USERNAME: cowork
       SPRING_DATASOURCE_PASSWORD: cowork
+      # Demo values for local evaluation only; use a secret manager in a real deployment
+      APP_JWT_SECRET: CUCiEooZn0aVNhYi9IZBgZIiJCGqdMiSpiVbmSonHuinjgGgthYoWaRxloNACwZP
+      APP_ADMIN_EMAIL: admin@cowork.local
+      APP_ADMIN_PASSWORD: Admin12345!
     ports:
       - "8080:8080"
 

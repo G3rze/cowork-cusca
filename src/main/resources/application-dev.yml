@@ -9,3 +9,13 @@ spring:
 logging:
   level:
     com.gerson.cowork: DEBUG
+
+app:
+  jwt:
+    # Development-only key (Base64, 384 bits). Never reuse outside local development.
+    secret: ${APP_JWT_SECRET:CUCiEooZn0aVNhYi9IZBgZIiJCGqdMiSpiVbmSonHuinjgGgthYoWaRxloNACwZP}
+    expiration: 1h
+  admin:
+    name: Administrator
+    email: ${APP_ADMIN_EMAIL:admin@cowork.local}
+    password: ${APP_ADMIN_PASSWORD:Admin12345!}

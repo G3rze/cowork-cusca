@@ -10,3 +10,12 @@ logging:
   level:
     com.gerson.cowork: INFO
     org.springframework: WARN
+
+app:
+  jwt:
+    secret: ${APP_JWT_SECRET}
+    expiration: ${APP_JWT_EXPIRATION:1h}
+  admin:
+    name: Administrator
+    email: ${APP_ADMIN_EMAIL:}
+    password: ${APP_ADMIN_PASSWORD:}
