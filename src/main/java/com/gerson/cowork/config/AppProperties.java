@@ -11,7 +11,7 @@ import java.time.Duration;
 
 @Validated
 @ConfigurationProperties(prefix = "app")
-public record AppProperties(@Valid @NotNull Jwt jwt, @Valid Admin admin) {
+public record AppProperties(@Valid @NotNull Jwt jwt, @Valid Admin admin, @Valid @NotNull Payment payment) {
 
 	/** @param secret Base64-encoded HMAC key, at least 256 bits */
 	public record Jwt(@NotBlank String secret, @DefaultValue("1h") Duration expiration) {
@@ -23,5 +23,19 @@ public record AppProperties(@Valid @NotNull Jwt jwt, @Valid Admin admin) {
 		public boolean isConfigured() {
 			return email != null && !email.isBlank() && password != null && !password.isBlank();
 		}
+	}
+
+	/**
+	 * External payment validation service. The timeouts bound how long a request thread can be held by a slow
+	 * dependency; they must stay below the timeout of whoever calls this API.
+	 *
+	 * @param baseUrl     base URL of the payment API (the in-app mock by default)
+	 * @param mockEnabled exposes the in-app mock endpoint; disable it when pointing to a real provider
+	 */
+	public record Payment(
+			@NotBlank String baseUrl,
+			@DefaultValue("1s") Duration connectTimeout,
+			@DefaultValue("2s") Duration readTimeout,
+			@DefaultValue("false") boolean mockEnabled) {
 	}
 }

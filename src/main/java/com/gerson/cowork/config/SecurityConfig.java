@@ -34,7 +34,9 @@ public class SecurityConfig {
 						.accessDeniedHandler(handlers))
 				.authorizeHttpRequests(auth -> auth
 						.requestMatchers("/api/v1/auth/**").permitAll()
-						.requestMatchers("/actuator/health/**", "/actuator/info").permitAll()
+						.requestMatchers("/actuator/health/**", "/actuator/info", "/actuator/circuitbreakers").permitAll()
+						// In-app payment mock, called by the application itself without a token
+						.requestMatchers("/mock/**").permitAll()
 						.requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
 						.requestMatchers(HttpMethod.GET, "/api/v1/spaces/**").hasAnyRole(Role.ADMIN.name(), Role.USER.name())
 						.requestMatchers("/api/v1/spaces/**").hasRole(Role.ADMIN.name())

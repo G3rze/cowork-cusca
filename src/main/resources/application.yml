@@ -17,3 +17,47 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+
+app:
+  payment:
+    base-url: ${APP_PAYMENT_BASE_URL:http://localhost:8080/mock/payments}
+    connect-timeout: 1s
+    read-timeout: 2s
+    # Serves the in-app payment mock. Turn it off when base-url points to a real provider.
+    mock-enabled: ${APP_PAYMENT_MOCK_ENABLED:true}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        register-health-indicator: true
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 1s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        # A full bulkhead is load shedding, not a sign that the payment service is unhealthy
+        ignore-exceptions:
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  bulkhead:
+    instances:
+      payment:
+        max-concurrent-calls: 10
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,circuitbreakers
+  endpoint:
+    health:
+      show-details: when-authorized
+      roles: ADMIN
+  health:
+    circuitbreakers:
+      enabled: true

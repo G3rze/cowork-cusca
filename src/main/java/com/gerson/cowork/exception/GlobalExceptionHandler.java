@@ -59,6 +59,11 @@ public class GlobalExceptionHandler {
 		return build(HttpStatus.METHOD_NOT_ALLOWED, ex.getMessage(), request);
 	}
 
+	@ExceptionHandler(PaymentDeclinedException.class)
+	public ResponseEntity<ErrorResponse> handlePaymentDeclined(PaymentDeclinedException ex, HttpServletRequest request) {
+		return build(HttpStatus.PAYMENT_REQUIRED, ex.getMessage(), request);
+	}
+
 	@ExceptionHandler(ConflictException.class)
 	public ResponseEntity<ErrorResponse> handleConflict(ConflictException ex, HttpServletRequest request) {
 		return build(HttpStatus.CONFLICT, ex.getMessage(), request);

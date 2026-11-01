@@ -58,6 +58,11 @@ public class Reservation {
 
 	// Transitions are delegated to the State pattern so the entity can never reach an invalid status
 
+	/** Fails fast (409) when the reservation can no longer be confirmed, without changing it. */
+	public void ensureCanConfirm() {
+		ReservationStates.of(status).confirm();
+	}
+
 	public void confirm() {
 		this.status = ReservationStates.of(status).confirm().status();
 	}

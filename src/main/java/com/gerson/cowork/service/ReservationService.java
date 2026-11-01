@@ -34,14 +34,17 @@ public class ReservationService {
 	private final UserRepository userRepository;
 	private final PriceCalculator priceCalculator;
 	private final ReservationMapper reservationMapper;
+	private final ReservationAccess reservationAccess;
 
 	public ReservationService(ReservationRepository reservationRepository, SpaceRepository spaceRepository,
-			UserRepository userRepository, PriceCalculator priceCalculator, ReservationMapper reservationMapper) {
+			UserRepository userRepository, PriceCalculator priceCalculator, ReservationMapper reservationMapper,
+			ReservationAccess reservationAccess) {
 		this.reservationRepository = reservationRepository;
 		this.spaceRepository = spaceRepository;
 		this.userRepository = userRepository;
 		this.priceCalculator = priceCalculator;
 		this.reservationMapper = reservationMapper;
+		this.reservationAccess = reservationAccess;
 	}
 
 	/**
@@ -98,14 +101,10 @@ public class ReservationService {
 		return reservationMapper.toResponse(reservation);
 	}
 
-	/** A USER asking for someone else's reservation gets 404, so ids do not reveal what exists. */
 	private Reservation findAccessible(AuthenticatedUser principal, UUID id) {
 		Reservation reservation = reservationRepository.findById(id)
 				.orElseThrow(() -> new ResourceNotFoundException("Reservation", id));
-		boolean isOwner = reservation.getUser().getId().equals(principal.id());
-		if (principal.role() != Role.ADMIN && !isOwner) {
-			throw new ResourceNotFoundException("Reservation", id);
-		}
+		reservationAccess.check(principal, reservation);
 		return reservation;
 	}
 
