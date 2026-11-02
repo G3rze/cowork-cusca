@@ -1,5 +1,6 @@
 package com.gerson.cowork.payment;
 
+import io.swagger.v3.oas.annotations.Hidden;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
  *   <li>anything else: approved after a short delay</li>
  * </ul>
  */
+@Hidden
 @RestController
 @RequestMapping("/mock/payments")
 @ConditionalOnProperty(name = "app.payment.mock-enabled", havingValue = "true")

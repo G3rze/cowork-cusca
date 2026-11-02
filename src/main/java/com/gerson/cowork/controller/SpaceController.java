@@ -4,6 +4,8 @@ import com.gerson.cowork.dto.space.SpaceRequest;
 import com.gerson.cowork.dto.space.SpaceResponse;
 import com.gerson.cowork.service.SpaceService;
 import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -22,6 +24,7 @@ import java.net.URI;
 import java.util.UUID;
 
 @RestController
+@Tag(name = "Spaces")
 @RequestMapping("/api/v1/spaces")
 public class SpaceController {
 
@@ -31,16 +34,19 @@ public class SpaceController {
 		this.spaceService = spaceService;
 	}
 
+	@Operation(summary = "List spaces (paged)", description = "ADMIN and USER.")
 	@GetMapping
 	public Page<SpaceResponse> findAll(@PageableDefault(size = 20, sort = "name") Pageable pageable) {
 		return spaceService.findAll(pageable);
 	}
 
+	@Operation(summary = "Get a space", description = "ADMIN and USER.")
 	@GetMapping("/{id}")
 	public SpaceResponse findById(@PathVariable UUID id) {
 		return spaceService.findById(id);
 	}
 
+	@Operation(summary = "Create a space", description = "ADMIN only.")
 	@PostMapping
 	public ResponseEntity<SpaceResponse> create(@Valid @RequestBody SpaceRequest request) {
 		SpaceResponse created = spaceService.create(request);
@@ -48,11 +54,13 @@ public class SpaceController {
 		return ResponseEntity.created(location).body(created);
 	}
 
+	@Operation(summary = "Update a space", description = "ADMIN only.")
 	@PutMapping("/{id}")
 	public SpaceResponse update(@PathVariable UUID id, @Valid @RequestBody SpaceRequest request) {
 		return spaceService.update(id, request);
 	}
 
+	@Operation(summary = "Delete a space", description = "ADMIN only. Fails with 409 if it has reservations.")
 	@DeleteMapping("/{id}")
 	public ResponseEntity<Void> delete(@PathVariable UUID id) {
 		spaceService.delete(id);

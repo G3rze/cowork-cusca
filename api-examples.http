@@ -1,0 +1,212 @@
+### Cowork API - example requests
+### Works with the VS Code "REST Client" extension and the IntelliJ HTTP Client.
+### Run the requests in order: each "@name" response feeds the next ones.
+### Start the stack first:  docker compose up --build
+### The reservation dates below must be in the future; adjust them if they have passed.
+
+@baseUrl = http://localhost:8080
+@adminEmail = admin@cowork.local
+@adminPassword = Admin12345!
+@userEmail = ana@example.com
+@userPassword = Password123
+
+### ---------------------------------------------------------------
+### 1. Authentication
+### ---------------------------------------------------------------
+
+# @name adminLogin
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "{{adminPassword}}" }
+
+###
+
+# Public registration: always creates a USER
+POST {{baseUrl}}/api/v1/auth/register
+Content-Type: application/json
+
+{ "name": "Ana Lopez", "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+###
+
+# @name userLogin
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+###
+@adminToken = {{adminLogin.response.body.$.accessToken}}
+@userToken = {{userLogin.response.body.$.accessToken}}
+
+### ---------------------------------------------------------------
+### 2. Spaces (read: ADMIN and USER, write: ADMIN only)
+### ---------------------------------------------------------------
+
+# @name createSpace
+POST {{baseUrl}}/api/v1/spaces
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Meeting room A",
+  "type": "MEETING_ROOM",
+  "capacity": 8,
+  "location": "Floor 2",
+  "hourlyRate": 25.50
+}
+
+###
+@spaceId = {{createSpace.response.body.$.id}}
+
+# Any authenticated user can list (paged) and read
+GET {{baseUrl}}/api/v1/spaces?page=0&size=10
+Authorization: Bearer {{userToken}}
+
+###
+
+GET {{baseUrl}}/api/v1/spaces/{{spaceId}}
+Authorization: Bearer {{userToken}}
+
+###
+
+PUT {{baseUrl}}/api/v1/spaces/{{spaceId}}
+Authorization: Bearer {{adminToken}}
+Content-Type: application/json
+
+{
+  "name": "Meeting room A (renovated)",
+  "type": "MEETING_ROOM",
+  "capacity": 10,
+  "location": "Floor 2",
+  "hourlyRate": 28.00
+}
+
+###
+
+# A USER trying to create a space gets 403
+POST {{baseUrl}}/api/v1/spaces
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "name": "Not allowed", "type": "DESK", "capacity": 1, "location": "Floor 1", "hourlyRate": 5 }
+
+### ---------------------------------------------------------------
+### 3. Reservations
+### ---------------------------------------------------------------
+
+# @name reservation1
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-10T15:00:00Z", "endAt": "2031-03-10T17:00:00Z" }
+
+###
+@reservationId = {{reservation1.response.body.$.id}}
+
+# Overlapping slot in the same space -> 409
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-10T16:00:00Z", "endAt": "2031-03-10T18:00:00Z" }
+
+###
+
+# A USER sees only their reservations; an ADMIN sees all of them
+GET {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+
+###
+
+GET {{baseUrl}}/api/v1/reservations/{{reservationId}}
+Authorization: Bearer {{userToken}}
+
+### ---------------------------------------------------------------
+### 4. Confirming a reservation (payment validation)
+### The payment service is simulated; the payment method picks its behavior:
+###   CARD_OK        -> 200, reservation CONFIRMED
+###   CARD_DECLINED  -> 402, reservation stays PENDING_PAYMENT
+###   CARD_ERROR     -> 202, provider fails: circuit breaker fallback, stays PENDING_PAYMENT
+###   CARD_SLOW      -> 202, provider exceeds the read timeout (~2 s): fallback, stays PENDING_PAYMENT
+### ---------------------------------------------------------------
+
+POST {{baseUrl}}/api/v1/reservations/{{reservationId}}/confirm
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+###
+
+# @name reservation2
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-11T15:00:00Z", "endAt": "2031-03-11T16:00:00Z" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_DECLINED" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_ERROR" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userToken}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_SLOW" }
+
+###
+
+# Cancel (owner or ADMIN). A second cancel returns 409
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/cancel
+Authorization: Bearer {{userToken}}
+
+### ---------------------------------------------------------------
+### 5. Occupancy report (ADMIN, cached, uses the configured business hours)
+### ---------------------------------------------------------------
+
+GET {{baseUrl}}/api/v1/reports/occupancy?from=2031-03-10&to=2031-03-16
+Authorization: Bearer {{adminToken}}
+
+### ---------------------------------------------------------------
+### 6. Operations
+### ---------------------------------------------------------------
+
+GET {{baseUrl}}/actuator/health
+
+###
+
+# Full health details (including the payment circuit breaker) require ADMIN
+GET {{baseUrl}}/actuator/health
+Authorization: Bearer {{adminToken}}
+
+###
+
+GET {{baseUrl}}/actuator/circuitbreakers
+
+###
+
+GET {{baseUrl}}/actuator/metrics/http.server.requests
+Authorization: Bearer {{adminToken}}
+
+###
+
+# OpenAPI document (Swagger UI: {{baseUrl}}/swagger-ui/index.html)
+GET {{baseUrl}}/v3/api-docs

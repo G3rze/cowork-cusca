@@ -15,6 +15,10 @@ public class LoggingEmailSender implements EmailSender {
 
 	static String mask(String email) {
 		int at = email.indexOf('@');
-		return at <= 1 ? "***" + email.substring(Math.max(at, 0)) : email.charAt(0) + "***" + email.substring(at);
+		if (at < 0) {
+			return "***";
+		}
+		// A one-character local part would be fully revealed by keeping its first letter
+		return at <= 1 ? "***" + email.substring(at) : email.charAt(0) + "***" + email.substring(at);
 	}
 }
