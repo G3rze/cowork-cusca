@@ -205,6 +205,14 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 				.content(json(Map.of("paymentMethod", "CARD_OK"))));
 	}
 
+	private ResultActions confirmWithKey(String token, String reservationId, String key, String paymentMethod) throws Exception {
+		return mockMvc.perform(post("/api/v1/reservations/" + reservationId + "/confirm")
+				.header("Authorization", bearer(token))
+				.header("Idempotency-Key", key)
+				.contentType(MediaType.APPLICATION_JSON)
+				.content(json(Map.of("paymentMethod", paymentMethod))));
+	}
+
 	private void assertStatus(String token, String reservationId, String expected) throws Exception {
 		mockMvc.perform(get("/api/v1/reservations/" + reservationId).header("Authorization", bearer(token)))
 				.andExpect(status().isOk())
@@ -413,5 +421,94 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 		// Wait longer than the email would take if one had been triggered
 		Thread.sleep(2_200);
 		assertThat(emailsTo(user.email())).isEmpty();
+	}
+
+	// ---- idempotency of /confirm ----
+
+	@Test
+	void retryingAConfirmWithTheSameKeyDoesNotChargeTwice() throws Exception {
+		String token = userToken();
+		String reservationId = reserve(token, newSpace(), 0);
+		String key = "confirm-" + UUID.randomUUID();
+
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isOk())
+				.andExpect(jsonPath("$.status", is("CONFIRMED")));
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isOk())
+				.andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Idempotent-Replayed", "true"))
+				.andExpect(jsonPath("$.status", is("CONFIRMED")))
+				.andExpect(jsonPath("$.paymentReference", is("PAY-TEST")));
+
+		assertThat(calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	void sameKeyWithAnotherPaymentMethodOrReservationIsRejected() throws Exception {
+		String token = userToken();
+		String spaceId = newSpace();
+		String first = reserve(token, spaceId, 0);
+		String second = reserve(token, spaceId, 1);
+		String key = "confirm-" + UUID.randomUUID();
+		confirmWithKey(token, first, key, "CARD_OK").andExpect(status().isOk());
+
+		confirmWithKey(token, first, key, "OTHER_CARD").andExpect(status().isUnprocessableEntity());
+		confirmWithKey(token, second, key, "CARD_OK").andExpect(status().isUnprocessableEntity());
+		assertThat(calls.get()).isEqualTo(1);
+	}
+
+	@Test
+	void anUnavailableProviderDoesNotConsumeTheKeySoTheRetryReallyRetries() throws Exception {
+		String token = userToken();
+		String reservationId = reserve(token, newSpace(), 0);
+		String key = "confirm-" + UUID.randomUUID();
+
+		behavior.set(Behavior.ERROR);
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isAccepted());
+
+		// The provider recovers: the same key now executes again instead of replaying the 202
+		behavior.set(Behavior.APPROVE);
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isOk())
+				.andExpect(jsonPath("$.status", is("CONFIRMED")));
+		assertThat(calls.get()).isEqualTo(2);
+	}
+
+	@Test
+	void aDeclinedPaymentIsNotStoredEither() throws Exception {
+		String token = userToken();
+		String reservationId = reserve(token, newSpace(), 0);
+		String key = "confirm-" + UUID.randomUUID();
+
+		behavior.set(Behavior.DECLINE);
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isPaymentRequired());
+		behavior.set(Behavior.APPROVE);
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isOk());
+	}
+
+	@Test
+	void concurrentConfirmsWithTheSameKeyCallTheProviderOnlyOnce() throws Exception {
+		handlerDelayMillis = 300; // keep the first request in flight while the others arrive
+		String token = userToken();
+		String reservationId = reserve(token, newSpace(), 0);
+		String key = "confirm-" + UUID.randomUUID();
+		int requests = 8;
+
+		ExecutorService executor = Executors.newFixedThreadPool(requests);
+		try {
+			List<Future<Integer>> results = new ArrayList<>();
+			for (int i = 0; i < requests; i++) {
+				results.add(executor.submit(() -> confirmWithKey(token, reservationId, key, "CARD_OK")
+						.andReturn().getResponse().getStatus()));
+			}
+			List<Integer> codes = new ArrayList<>();
+			for (Future<Integer> result : results) {
+				codes.add(result.get());
+			}
+
+			// One execution (200), replays (200) or "still processing" (409): never a second charge
+			assertThat(codes).contains(200).allMatch(code -> code == 200 || code == 409);
+			assertThat(calls.get()).isEqualTo(1);
+			assertStatus(token, reservationId, "CONFIRMED");
+		} finally {
+			executor.shutdownNow();
+		}
 	}
 }

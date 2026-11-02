@@ -66,6 +66,12 @@ public class GlobalExceptionHandler {
 		return build(HttpStatus.METHOD_NOT_ALLOWED, ex.getMessage(), request);
 	}
 
+	@ExceptionHandler(IdempotencyKeyReuseException.class)
+	public ResponseEntity<ErrorResponse> handleIdempotencyKeyReuse(IdempotencyKeyReuseException ex,
+			HttpServletRequest request) {
+		return build(HttpStatus.UNPROCESSABLE_ENTITY, ex.getMessage(), request);
+	}
+
 	@ExceptionHandler(PaymentDeclinedException.class)
 	public ResponseEntity<ErrorResponse> handlePaymentDeclined(PaymentDeclinedException ex, HttpServletRequest request) {
 		return build(HttpStatus.PAYMENT_REQUIRED, ex.getMessage(), request);

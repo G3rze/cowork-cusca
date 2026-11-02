@@ -1,5 +1,6 @@
 package com.gerson.cowork.service;
 
+import com.gerson.cowork.dto.reservation.ReservationResponse;
 import com.gerson.cowork.entity.Reservation;
 import com.gerson.cowork.event.ReservationConfirmedEvent;
 import com.gerson.cowork.exception.PaymentDeclinedException;
@@ -60,6 +61,15 @@ public class ReservationConfirmationService {
 	}
 
 	public ConfirmationResult confirm(AuthenticatedUser principal, UUID reservationId, String paymentMethod) {
+		return confirm(principal, reservationId, paymentMethod, IdempotencyCompletion.NONE);
+	}
+
+	/**
+	 * @param completion called inside the write transaction when the reservation gets confirmed, so an
+	 *                   idempotency key is stored atomically with the state change
+	 */
+	public ConfirmationResult confirm(AuthenticatedUser principal, UUID reservationId, String paymentMethod,
+			IdempotencyCompletion completion) {
 		BigDecimal amount = readTx.execute(status -> {
 			Reservation reservation = load(reservationId);
 			reservationAccess.check(principal, reservation);
@@ -87,7 +97,9 @@ public class ReservationConfirmationService {
 							reservation.getStartAt(),
 							reservation.getEndAt(),
 							reservation.getTotalPrice()));
-					yield new ConfirmationResult(reservationMapper.toResponse(reservation), true);
+					ReservationResponse response = reservationMapper.toResponse(reservation);
+					completion.record(200, response);
+					yield new ConfirmationResult(response, true);
 				}
 				case DECLINED -> throw new PaymentDeclinedException(payment.reason());
 				// Unknown payment outcome: keep PENDING_PAYMENT so it can be retried, instead of failing the request

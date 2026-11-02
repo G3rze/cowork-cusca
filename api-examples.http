@@ -179,6 +179,62 @@ POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/cancel
 Authorization: Bearer {{userToken}}
 
 ### ---------------------------------------------------------------
+### 4b. Idempotent retries (Idempotency-Key)
+### Send the same key to retry safely after a lost response: the original response is
+### replayed (header "Idempotent-Replayed: true") and nothing runs twice.
+### Same key + a different request -> 422. Keys are scoped per user and expire after 24 h.
+### ---------------------------------------------------------------
+
+@idemKey = 7d0e4a3c-5a54-4a52-9d5f-0c1f6a1e2b01
+
+# @name idemReservation
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-20T15:00:00Z", "endAt": "2031-03-20T17:00:00Z" }
+
+###
+
+# Send it again: 201 with the SAME reservation id and "Idempotent-Replayed: true"
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-20T15:00:00Z", "endAt": "2031-03-20T17:00:00Z" }
+
+###
+
+# Same key, different request -> 422
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userToken}}
+Idempotency-Key: {{idemKey}}
+Content-Type: application/json
+
+{ "spaceId": "{{spaceId}}", "startAt": "2031-03-21T15:00:00Z", "endAt": "2031-03-21T17:00:00Z" }
+
+###
+
+# Confirm twice with the same key: the payment provider is called only once
+POST {{baseUrl}}/api/v1/reservations/{{idemReservation.response.body.$.id}}/confirm
+Authorization: Bearer {{userToken}}
+Idempotency-Key: confirm-{{idemKey}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{idemReservation.response.body.$.id}}/confirm
+Authorization: Bearer {{userToken}}
+Idempotency-Key: confirm-{{idemKey}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+### ---------------------------------------------------------------
 ### 5. Occupancy report (ADMIN, cached, uses the configured business hours)
 ### ---------------------------------------------------------------
 

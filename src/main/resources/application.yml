@@ -73,3 +73,8 @@ spring.cache:
   caffeine:
     # Safety net: entries are also evicted explicitly whenever a reservation changes
     spec: maximumSize=200,expireAfterWrite=10m
+
+app.idempotency:
+  ttl: 24h
+  processing-timeout: 2m
+  cleanup-interval: PT1H

@@ -4,11 +4,13 @@ import com.gerson.cowork.dto.reservation.ConfirmReservationRequest;
 import com.gerson.cowork.dto.reservation.ReservationCreateRequest;
 import com.gerson.cowork.dto.reservation.ReservationResponse;
 import com.gerson.cowork.security.AuthenticatedUser;
-import com.gerson.cowork.service.ConfirmationResult;
-import com.gerson.cowork.service.ReservationConfirmationService;
+import com.gerson.cowork.service.IdempotencyService;
+import com.gerson.cowork.service.IdempotentResponse;
+import com.gerson.cowork.service.IdempotentReservationService;
 import com.gerson.cowork.service.ReservationService;
 import jakarta.validation.Valid;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,6 +23,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
@@ -33,23 +36,30 @@ import java.util.UUID;
 @RequestMapping("/api/v1/reservations")
 public class ReservationController {
 
+	private static final String IDEMPOTENCY_KEY_DESCRIPTION = "Optional but recommended: a unique value per intent "
+			+ "(e.g. a UUID). Retrying with the same key and request returns the original response instead of "
+			+ "repeating the operation; the same key with a different request returns 422.";
+
 	private final ReservationService reservationService;
-	private final ReservationConfirmationService confirmationService;
+	private final IdempotentReservationService idempotentReservations;
 
 	public ReservationController(ReservationService reservationService,
-			ReservationConfirmationService confirmationService) {
+			IdempotentReservationService idempotentReservations) {
 		this.reservationService = reservationService;
-		this.confirmationService = confirmationService;
+		this.idempotentReservations = idempotentReservations;
 	}
 
 	@Operation(summary = "Create a reservation",
 			description = "For the authenticated user. Starts as PENDING_PAYMENT. 409 if the slot is already taken.")
 	@PostMapping
 	public ResponseEntity<ReservationResponse> create(@AuthenticationPrincipal AuthenticatedUser principal,
+			@RequestHeader(value = IdempotencyService.HEADER, required = false)
+			@Parameter(description = IDEMPOTENCY_KEY_DESCRIPTION) String idempotencyKey,
 			@Valid @RequestBody ReservationCreateRequest request) {
-		ReservationResponse created = reservationService.create(principal, request);
-		URI location = ServletUriComponentsBuilder.fromCurrentRequest().path("/{id}").buildAndExpand(created.id()).toUri();
-		return ResponseEntity.created(location).body(created);
+		IdempotentResponse result = idempotentReservations.create(principal, idempotencyKey, request);
+		URI location = ServletUriComponentsBuilder.fromCurrentRequest().path("/{id}")
+				.buildAndExpand(result.body().id()).toUri();
+		return respond(result).location(location).body(result.body());
 	}
 
 	@Operation(summary = "List reservations (paged)", description = "USER: their own. ADMIN: all of them.")
@@ -81,9 +91,16 @@ public class ReservationController {
 					+ "Test payment methods: CARD_OK, CARD_DECLINED, CARD_ERROR, CARD_SLOW.")
 	@PostMapping("/{id}/confirm")
 	public ResponseEntity<ReservationResponse> confirm(@AuthenticationPrincipal AuthenticatedUser principal,
-			@PathVariable UUID id, @Valid @RequestBody ConfirmReservationRequest request) {
-		ConfirmationResult result = confirmationService.confirm(principal, id, request.paymentMethod());
-		return ResponseEntity.status(result.confirmed() ? HttpStatus.OK : HttpStatus.ACCEPTED)
-				.body(result.reservation());
+			@PathVariable UUID id,
+			@RequestHeader(value = IdempotencyService.HEADER, required = false)
+			@Parameter(description = IDEMPOTENCY_KEY_DESCRIPTION) String idempotencyKey,
+			@Valid @RequestBody ConfirmReservationRequest request) {
+		IdempotentResponse result = idempotentReservations.confirm(principal, idempotencyKey, id, request.paymentMethod());
+		return respond(result).body(result.body());
+	}
+
+	private static ResponseEntity.BodyBuilder respond(IdempotentResponse result) {
+		ResponseEntity.BodyBuilder builder = ResponseEntity.status(HttpStatus.valueOf(result.status()));
+		return result.replayed() ? builder.header("Idempotent-Replayed", "true") : builder;
 	}
 }
