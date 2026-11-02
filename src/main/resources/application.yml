@@ -78,3 +78,13 @@ app.idempotency:
   ttl: 24h
   processing-timeout: 2m
   cleanup-interval: PT1H
+
+app.outbox:
+  poll-interval: PT2S
+  batch-size: 20
+  # Must exceed the time one delivery takes; after it another worker may take the event over
+  lease: PT1M
+  max-attempts: 8
+  base-backoff: PT5S
+  max-backoff: PT10M
+  retention: P7D

@@ -19,6 +19,6 @@ class LoggingEmailSenderTest {
 
 	@Test
 	void sendingNeverThrows() {
-		new LoggingEmailSender().send("ana@test.com", "Subject", "Body");
+		new LoggingEmailSender().send("msg-1", "ana@test.com", "Subject", "Body");
 	}
 }

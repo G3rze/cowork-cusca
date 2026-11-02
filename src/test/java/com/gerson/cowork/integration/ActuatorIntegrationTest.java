@@ -45,4 +45,11 @@ class ActuatorIntegrationTest extends AbstractIntegrationTest {
 						.header("Authorization", bearer(adminToken())))
 				.andExpect(status().isOk());
 	}
+
+	@Test
+	void outboxBacklogIsObservable() throws Exception {
+		mockMvc.perform(get("/actuator/metrics/cowork.outbox.backlog").header("Authorization", bearer(adminToken())))
+				.andExpect(status().isOk())
+				.andExpect(jsonPath("$.availableTags[0].tag", is("status")));
+	}
 }

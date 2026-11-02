@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -51,6 +52,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  */
 @SpringBootTest(properties = {
 		"app.payment.read-timeout=500ms",
+		"app.outbox.poll-interval=PT0.2S",
 		"resilience4j.circuitbreaker.instances.payment.sliding-window-size=4",
 		"resilience4j.circuitbreaker.instances.payment.minimum-number-of-calls=4",
 		"resilience4j.circuitbreaker.instances.payment.wait-duration-in-open-state=1s",
@@ -72,10 +74,13 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 	private static final AtomicReference<String> lastIdempotencyKey = new AtomicReference<>();
 	private static final AtomicReference<HikariDataSource> dataSourceRef = new AtomicReference<>();
 	private static volatile long handlerDelayMillis = 0;
+	/** Runs while the payment is in flight (between the two database transactions of a confirmation). */
+	private static volatile Runnable duringPayment = () -> {
+	};
 	private static final HttpServer server = startServer();
 
 	/** Slow, recording replacement for the email sender, to prove notifications are asynchronous. */
-	record SentEmail(String to, String subject, Thread thread) {
+	record SentEmail(String messageId, String to, String subject, Thread thread) {
 	}
 
 	static final List<SentEmail> sentEmails = new CopyOnWriteArrayList<>();
@@ -85,9 +90,9 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 		@Bean
 		@Primary
 		EmailSender slowEmailSender() {
-			return (to, subject, body) -> {
+			return (messageId, to, subject, body) -> {
 				sleep(1_500);
-				sentEmails.add(new SentEmail(to, subject, Thread.currentThread()));
+				sentEmails.add(new SentEmail(messageId, to, subject, Thread.currentThread()));
 			};
 		}
 	}
@@ -96,6 +101,8 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 	private CircuitBreakerRegistry circuitBreakerRegistry;
 	@Autowired
 	private DataSource dataSource;
+	@Autowired
+	private JdbcClient jdbc;
 
 	private static HttpServer startServer() {
 		try {
@@ -120,6 +127,7 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 				maxDbConnectionsDuringCall.accumulateAndGet(ds.getHikariPoolMXBean().getActiveConnections(), Math::max);
 			}
 			exchange.getRequestBody().readAllBytes();
+			duringPayment.run();
 			sleep(handlerDelayMillis);
 			Behavior current = behavior.get();
 			if (current == Behavior.SLOW) {
@@ -164,6 +172,8 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 	void resetFakeProviderAndCircuit() {
 		behavior.set(Behavior.APPROVE);
 		handlerDelayMillis = 0;
+		duringPayment = () -> {
+		};
 		calls.set(0);
 		maxInFlight.set(0);
 		maxDbConnectionsDuringCall.set(0);
@@ -510,5 +520,50 @@ class ReservationConfirmationIntegrationTest extends AbstractIntegrationTest {
 		} finally {
 			executor.shutdownNow();
 		}
+	}
+
+	// ---- transactional outbox ----
+
+	private long outboxRows(String reservationId) {
+		return jdbc.sql("SELECT count(*) FROM outbox_events WHERE aggregate_id = :id")
+				.param("id", UUID.fromString(reservationId)).query(Long.class).single();
+	}
+
+	@Test
+	void confirmingWritesExactlyOneOutboxEventWhichIsThenDelivered() throws Exception {
+		TestUser user = newUser();
+		String email = user.email();
+		String reservationId = reserve(user.token(), newSpace(), 0);
+
+		confirm(user.token(), reservationId).andExpect(status().isOk());
+
+		assertThat(outboxRows(reservationId)).isEqualTo(1);
+		await().atMost(Duration.ofSeconds(6)).untilAsserted(() -> assertThat(emailsTo(email)).hasSize(1));
+		String eventId = jdbc.sql("SELECT CAST(id AS text) FROM outbox_events WHERE aggregate_id = :id")
+				.param("id", UUID.fromString(reservationId)).query(String.class).single();
+		// the outbox event id travels as the message id, so the receiver can deduplicate redeliveries
+		assertThat(emailsTo(email).get(0).messageId()).isEqualTo(eventId);
+		await().atMost(Duration.ofSeconds(6)).untilAsserted(() -> assertThat(jdbc
+				.sql("SELECT status FROM outbox_events WHERE aggregate_id = :id")
+				.param("id", UUID.fromString(reservationId)).query(String.class).single()).isEqualTo("SENT"));
+	}
+
+	@Test
+	void ifTheConfirmationRollsBackNoEventSurvives() throws Exception {
+		TestUser user = newUser();
+		String email = user.email();
+		String token = user.token();
+		String reservationId = reserve(token, newSpace(), 0);
+		String key = "confirm-" + UUID.randomUUID();
+		// The idempotency key vanishes while the payment is in flight: recording the response then fails, after the
+		// event was already written, so the whole transaction must roll back -- event included.
+		duringPayment = () -> jdbc.sql("DELETE FROM idempotency_keys WHERE idem_key = :key").param("key", key).update();
+
+		confirmWithKey(token, reservationId, key, "CARD_OK").andExpect(status().isInternalServerError());
+
+		assertThat(outboxRows(reservationId)).isZero();
+		assertStatus(token, reservationId, "PENDING_PAYMENT");
+		Thread.sleep(800); // longer than a poll plus the email delay: nothing may arrive
+		assertThat(emailsTo(email)).isEmpty();
 	}
 }

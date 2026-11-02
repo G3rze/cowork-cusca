@@ -9,8 +9,8 @@ import org.springframework.stereotype.Component;
 public class LoggingEmailSender implements EmailSender {
 
 	@Override
-	public void send(String to, String subject, String body) {
-		log.info("[SIMULATED EMAIL] to={} subject=\"{}\" body=\"{}\"", mask(to), subject, body);
+	public void send(String messageId, String to, String subject, String body) {
+		log.info("[SIMULATED EMAIL] id={} to={} subject=\"{}\" body=\"{}\"", messageId, mask(to), subject, body);
 	}
 
 	static String mask(String email) {

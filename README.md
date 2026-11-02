@@ -42,7 +42,7 @@ docker compose up -d postgres      # PostgreSQL en localhost:5432
 ### Pruebas
 
 ```bash
-./mvnw clean verify                # 146 pruebas + informe de cobertura
+./mvnw clean verify                # 162 pruebas + informe de cobertura
 ```
 
 Necesita Docker en ejecución: las pruebas de integración usan **Testcontainers** con un PostgreSQL real. El informe de cobertura queda en `target/site/jacoco/index.html` (≈ 97 % de instrucciones, ≈ 83 % de ramas).
@@ -93,13 +93,14 @@ state/         State: ciclo de vida de la reserva
 pricing/       Strategy: cálculo de tarifas
 payment/       cliente del servicio de pago (+ mock interno)
 event/         eventos de dominio (Observer)
-notification/  listener asíncrono + puerto EmailSender
+outbox/        outbox transaccional: registro, publicador, reintentos
+notification/  puerto EmailSender (implementación simulada por log)
 security/      JWT (servicio + filtro) y manejo de 401/403
 config/        propiedades tipadas, seguridad, caché, async, OpenAPI
 exception/     excepciones de negocio + @RestControllerAdvice
 ```
 
-Migraciones Flyway: `V1` extensión `btree_gist`, `V2` esquema, `V3` constraint contra solapamientos, `V4` llaves de idempotencia. Hibernate solo **valida** el esquema (`ddl-auto: validate`).
+Migraciones Flyway: `V1` extensión `btree_gist`, `V2` esquema, `V3` constraint contra solapamientos, `V4` llaves de idempotencia, `V5` outbox. Hibernate solo **valida** el esquema (`ddl-auto: validate`).
 
 ## 4. Requisitos técnicos y por qué se usó cada uno
 
@@ -112,7 +113,7 @@ Migraciones Flyway: `V1` extensión `btree_gist`, `V2` esquema, `V3` constraint 
 | **Actuator** | `health`, `info`, `metrics` y `circuitbreakers`. `/actuator/health` es público pero sin detalle; un ADMIN ve la base de datos y el estado del circuito. `metrics` exige autenticación. |
 | **Perfiles + `@ConfigurationProperties`** | `application-dev.yml` / `application-prod.yml`. Toda la configuración propia está en records tipados y validados: `AppProperties` (JWT, administrador inicial, pago, horario) e `IdempotencyProperties` (TTL y tiempos de las llaves). En `prod` el secreto JWT y la base de datos son obligatorios por variable de entorno: sin ellos la aplicación no arranca. |
 | **Caché `@Cacheable`/`@CacheEvict`** | `@Cacheable` en el reporte de ocupación (Caffeine, 10 min como red de seguridad). **La invalidación no usa la anotación `@CacheEvict`**: se hace en un listener `AFTER_COMMIT` (`OccupancyCacheInvalidator`). Con `@CacheEvict` la entrada se borraría *antes* del commit y otra petición podría volver a cachear el dato viejo. |
-| **`@Async` / eventos** | `ApplicationEventPublisher` + `@Async` sobre un executor de virtual threads (ver §5.3). |
+| **`@Async` / eventos** | `ApplicationEventPublisher` para los eventos de dominio y `@Async` sobre un executor de virtual threads para entregar cada notificación (ver §5.3 y §5.10). |
 | **`@Transactional`** | `ReservationService` es transaccional (lectura por defecto, escritura en `create`/`cancel`). La confirmación **no** lo es a propósito (ver §5.4). |
 | **OpenAPI** | springdoc genera el documento; esquema `bearerAuth` para probar con el botón *Authorize*. |
 | **Testing** | Mockito para la lógica de servicios; integración con Testcontainers (ver §7). |
@@ -136,9 +137,9 @@ Migraciones Flyway: `V1` extensión `btree_gist`, `V2` esquema, `V3` constraint 
 
 ### 5.3 Observer: eventos de dominio
 
-`ReservationConfirmedEvent` y `ReservationCancelledEvent` son `record`s con valores simples, no la entidad JPA: así los listeners (que corren después del commit y en otro hilo) nunca tocan relaciones perezosas. Se escuchan con `@TransactionalEventListener(AFTER_COMMIT)`: si la transacción hace rollback, nadie reacciona.
+`ReservationConfirmedEvent` y `ReservationCancelledEvent` son `record`s con valores simples, no la entidad JPA: así los listeners (que corren dentro de la transacción o en otro hilo) nunca tocan relaciones perezosas. Los observadores reaccionan solo si la operación se confirma: el invalidador de caché escucha con `@TransactionalEventListener(AFTER_COMMIT)` y el registro en el outbox corre dentro de la propia transacción (si hay rollback, desaparece con ella).
 
-- `ReservationNotificationListener` (`@Async`, virtual threads): envía el correo simulado (`EmailSender`, implementado por un log con la dirección enmascarada). La respuesta HTTP no espera al correo.
+- `OutboxRecorder`: convierte `ReservationConfirmedEvent` en una fila del **outbox**, dentro de la misma transacción de la confirmación; un publicador la entrega después por correo, de forma asíncrona y con reintentos (§5.10). La respuesta HTTP no espera al correo.
 - `OccupancyCacheInvalidator`: vacía la caché del reporte.
 
 ### 5.4 Concurrencia: tres mecanismos, cada uno para un problema
@@ -201,6 +202,25 @@ Si la respuesta de un `POST` se pierde por un timeout de red, el cliente reinten
 - Las llaves expiran (`app.idempotency.ttl`, 24 h) y un job periódico (`IdempotencyCleanup`) las purga. Se puede ejecutar en todas las réplicas a la vez sin lock distribuido, porque borrar filas expiradas es idempotente.
 - Sin el header todo funciona como antes (la llave es opcional para no romper clientes existentes; un banco la exigiría).
 
+### 5.10 Outbox transaccional: notificar sin perder eventos
+
+**El problema (dual write).** Confirmar una reserva escribe en la base de datos *y* debe avisar a un sistema externo (el correo). Son dos sistemas sin transacción común: si el proceso muere entre el commit y el envío, la reserva queda confirmada y el aviso se pierde; con `AFTER_COMMIT` + `@Async` pasaba justo eso. Una transacción distribuida (2PC) acoplaría los sistemas, así que se usa el patrón *transactional outbox*.
+
+**Cómo funciona**
+1. **Escritura atómica:** al confirmar, `OutboxRecorder` inserta una fila en `outbox_events` **dentro de la misma transacción** que cambia la reserva. Existe si y solo si la confirmación se confirmó; si hay rollback, desaparece con ella. Insertar fuera de una transacción es un error de programación y se rechaza.
+2. **Publicación aparte:** `OutboxPublisher` consulta cada 2 s (`app.outbox.poll-interval`) los eventos pendientes y los entrega con `OutboxDispatcher` (`@Async`, un virtual thread por mensaje, para que un destinatario lento no retrase al resto).
+3. **Varias réplicas sin duplicar:** los eventos se reclaman con `SELECT … FOR UPDATE SKIP LOCKED` más un **lease** (`locked_until`). Se usa un lease y no una transacción abierta para **no retener una conexión de la base de datos mientras se llama al exterior** (§5.5). Si el worker muere a mitad de una entrega, el lease vence y otro retoma el evento.
+4. **Reintentos y dead letter:** si la entrega falla se reprograma con *backoff* exponencial con jitter (5 s, 10 s, 20 s… hasta 10 min). Tras 8 intentos pasa a `FAILED` (dead letter): no se reintenta más y se conserva para revisarlo.
+5. **Observabilidad:** la métrica `cowork.outbox.backlog{status=pending|failed}` (visible en `/actuator/metrics`) y los contadores `cowork.outbox.delivered` y `cowork.outbox.failures`. Un `pending` creciente indica una entrega atascada; cualquier `failed` requiere atención.
+6. **Limpieza:** los eventos entregados se purgan a los 7 días; los `FAILED` no se purgan.
+
+**Garantía: *at-least-once*.** Un evento puede entregarse dos veces (por ejemplo, un worker más lento que su lease). Por eso el id del evento viaja como `messageId` en `EmailSender.send(...)`: un proveedor real lo usa para deduplicar, igual que un consumidor idempotente. La implementación simulada solo lo registra en el log.
+
+**Verificado**
+- Atomicidad: si la confirmación hace rollback tras escribir el evento, no queda fila ni se envía nada.
+- Caída del proceso: se mató la aplicación justo tras el commit; la fila quedó `PENDING` con 0 envíos y, al reiniciar, el correo salió y el evento quedó `SENT`.
+- Reintentos con backoff, dead letter, lease de un worker caído, lease de un worker vivo (se respeta), y 4 publicadores concurrentes sobre 60 eventos: cada uno se entrega exactamente una vez.
+
 ## 6. Seguridad: lo que hay que saber
 
 - Las credenciales y el secreto JWT del `docker-compose.yml` y de `application-dev.yml` son **de demostración**. En un despliegue real irían en un gestor de secretos; en `prod` fuera de Compose son obligatorios por variable de entorno (`APP_JWT_SECRET`, base de datos) y no tienen valor por defecto.
@@ -210,18 +230,19 @@ Si la respuesta de un `POST` se pierde por un timeout de red, el cliente reinten
 
 ## 7. Pruebas
 
-146 pruebas, todas contra PostgreSQL real cuando tocan la base de datos.
+162 pruebas, todas contra PostgreSQL real cuando tocan la base de datos.
 
 - **Unitarias (Mockito):** servicios de reservas, confirmación, reporte, espacios y autenticación; State; Strategy; JWT; manejo de errores; enmascarado de correos. Destaca que el orden pago-entre-transacciones se verifica con `InOrder`.
 - **Integración (Testcontainers):** autenticación y roles, CRUD, reservas y permisos, el constraint de solapamiento directamente sobre la BD, reporte (cálculo, medianoche, caché que se invalida), actuator, OpenAPI y errores HTTP.
 - **Resiliencia con un proveedor real:** `ReservationConfirmationIntegrationTest` levanta un servidor HTTP falso y controlable y comprueba aprobado, rechazado, error 503, proveedor lento cortado por el timeout, apertura y recuperación del circuito, límite del bulkhead, ausencia de conexiones retenidas y notificación asíncrona.
 - **Idempotencia:** misma llave → misma respuesta y una sola reserva; otra petición con la misma llave → 422; llaves por usuario; fallos no almacenados; 20 reintentos simultáneos → una reserva; 8 confirmaciones simultáneas con la misma llave → el proveedor se llama **una** vez; toma de llaves abandonadas y purga de expiradas.
+- **Outbox:** atomicidad con la confirmación, caída del proceso, reintentos con backoff, dead letter, leases, 4 publicadores concurrentes sin duplicados, purga y métricas.
 - **Concurrencia:** 50 hilos reservando el mismo horario (solo uno entra), 20 hilos con horarios distintos (todos entran) y 10 cancelaciones simultáneas (solo una transiciona).
 
 ## 8. Compromisos por el límite de tiempo
 
 - **El proveedor de pago es un mock dentro de la misma aplicación** (`/mock/payments/validate`, mismo puerto). Se llama por HTTP real con timeouts, pero no es un servicio independiente: si la aplicación cae, el "proveedor" cae con ella. Una alternativa más fiel sería WireMock como tercer contenedor; se prefirió tener menos piezas que puedan fallar al levantar. Se desactiva con `APP_PAYMENT_MOCK_ENABLED=false` al apuntar a un proveedor real.
-- **`AFTER_COMMIT` no es durable:** si el proceso muere entre el commit y el envío, el correo se pierde.
+- **El outbox entrega *at-least-once*, no exactly-once:** un correo puede llegar duplicado en casos límite; se mitiga con el `messageId`, que un proveedor real debe respetar. Además, la entrega no es inmediata: hay hasta ~2 s (el intervalo de sondeo) entre la confirmación y el envío. El invalidador de la caché del reporte sigue usando `AFTER_COMMIT`, porque la caché es local y se pierde con el proceso: no necesita durabilidad.
 - **Idempotencia opcional:** sin `Idempotency-Key`, dos confirmaciones simultáneas del mismo id aún pueden llamar ambas al proveedor (la segunda falla después por `@Version`, `409`); con la llave, solo una llega al proveedor. También se envía `Idempotency-Key` (el id de la reserva) al proveedor de pago, que debe respetarla para deduplicar. `cancel` no usa llave: repetirlo devuelve `409` porque la reserva ya está cancelada.
 - **La caché es local a cada instancia.** Con varias réplicas, cada una tendría la suya.
 - **El lock del espacio serializa las reservas de ese espacio.** Es lo adecuado para este dominio; un espacio con miles de reservas por segundo sería un cuello de botella.
@@ -230,7 +251,7 @@ Si la respuesta de un `POST` se pierde por un timeout de red, el cliente reinten
 
 ## 9. Fuera de alcance y qué se haría con más tiempo
 
-- **Outbox transaccional** para las notificaciones (durabilidad) y envío real de correo.
+- **Envío real de correo** (el `EmailSender` actual solo lo simula) y un destino de eventos hacia un broker (Kafka/RabbitMQ) reutilizando el mismo outbox; un consumidor con deduplicación por `messageId`.
 - **Caché distribuida (Redis)** y observabilidad (Prometheus, trazas distribuidas).
 - **Refresh tokens**, revocación y *rate limiting* (Bucket4j) en login y en la API.
 - **WireMock** como proveedor independiente en el Compose y reintentos con *backoff* (solo con idempotencia garantizada).
