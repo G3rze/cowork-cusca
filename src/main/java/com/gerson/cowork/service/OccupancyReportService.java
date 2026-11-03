@@ -48,7 +48,7 @@ public class OccupancyReportService {
 	 * daily window). Cached because it is expensive and read far more often than reservations change; the entry
 	 * is evicted by {@link OccupancyCacheInvalidator} when a reservation is confirmed or cancelled.
 	 */
-	@Cacheable(cacheNames = CACHE_NAME, key = "#from.toString() + '|' + #to.toString()")
+	@Cacheable(cacheNames = CACHE_NAME, sync = true, key = "#from.toString() + '|' + #to.toString()")
 	public OccupancyReportResponse occupancy(LocalDate from, LocalDate to) {
 		validate(from, to);
 		long days = ChronoUnit.DAYS.between(from, to) + 1;

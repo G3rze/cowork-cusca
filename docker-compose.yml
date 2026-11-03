@@ -6,6 +6,8 @@ services:
       POSTGRES_DB: cowork
       POSTGRES_USER: cowork
       POSTGRES_PASSWORD: cowork
+    # Log sessions that wait on a lock longer than deadlock_timeout (1s), to spot contention
+    command: ["postgres", "-c", "log_lock_waits=on"]
     ports:
       - "5432:5432"
     volumes:

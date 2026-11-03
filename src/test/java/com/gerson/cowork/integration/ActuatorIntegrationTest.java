@@ -52,4 +52,12 @@ class ActuatorIntegrationTest extends AbstractIntegrationTest {
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.availableTags[0].tag", is("status")));
 	}
+
+	@Test
+	void connectionPoolMetricsAreObservable() throws Exception {
+		mockMvc.perform(get("/actuator/metrics/hikaricp.connections.active").header("Authorization", bearer(adminToken())))
+				.andExpect(status().isOk());
+		mockMvc.perform(get("/actuator/metrics/hikaricp.connections.pending").header("Authorization", bearer(adminToken())))
+				.andExpect(status().isOk());
+	}
 }

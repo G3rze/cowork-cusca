@@ -10,10 +10,15 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+    properties:
+      # Loads lazy collections/associations in batches instead of one query per row (N+1 guard)
+      hibernate.default_batch_fetch_size: 20
   datasource:
     hikari:
       maximum-pool-size: 10
       connection-timeout: 3000
+      # Logs a stack trace if a connection is held longer than this (finds leaks and long transactions)
+      leak-detection-threshold: 20000
   flyway:
     enabled: true
     locations: classpath:db/migration
