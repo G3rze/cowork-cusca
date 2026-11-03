@@ -1,0 +1,278 @@
+### Cowork API - example requests
+### VS Code extension: "REST Client" (humao.rest-client).
+### Run the requests in order, top to bottom ("Send Request" above each one):
+### a request named with "# @name x" is read later as {{x.response.body.$.field}}; nothing is pasted by hand.
+### A named request must have been sent first (in this VS Code session) for its values to resolve.
+### Only POST /reservations and POST /reservations/{id}/confirm (create and payment) accept
+### "Idempotency-Key"; every request to those two endpoints below sends one.
+### Start the stack first:  docker compose up --build
+### The reservation dates must be in the future; adjust them if they have passed.
+
+@baseUrl = http://localhost:8080
+@adminEmail = admin@cowork.local
+@adminPassword = Admin12345!
+@userEmail = ana@example.com
+@userPassword = Password123
+
+### ---------------------------------------------------------------
+### 1. Authentication
+### ---------------------------------------------------------------
+
+# @name adminLogin
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "{{adminEmail}}", "password": "{{adminPassword}}" }
+
+###
+
+# Public registration: always creates a USER (409 if it already exists, which is fine)
+POST {{baseUrl}}/api/v1/auth/register
+Content-Type: application/json
+
+{ "name": "Ana Lopez", "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+###
+
+# @name userLogin
+POST {{baseUrl}}/api/v1/auth/login
+Content-Type: application/json
+
+{ "email": "{{userEmail}}", "password": "{{userPassword}}" }
+
+### ---------------------------------------------------------------
+### 2. Spaces (read: ADMIN and USER, write: ADMIN only)
+### ---------------------------------------------------------------
+
+# @name createSpace
+POST {{baseUrl}}/api/v1/spaces
+Authorization: Bearer {{adminLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Meeting room A",
+  "type": "MEETING_ROOM",
+  "capacity": 8,
+  "location": "Floor 2",
+  "hourlyRate": 25.50
+}
+
+###
+
+# Any authenticated user can list (paged) and read
+GET {{baseUrl}}/api/v1/spaces?page=0&size=10
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+###
+
+GET {{baseUrl}}/api/v1/spaces/{{createSpace.response.body.$.id}}
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+###
+
+PUT {{baseUrl}}/api/v1/spaces/{{createSpace.response.body.$.id}}
+Authorization: Bearer {{adminLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{
+  "name": "Meeting room A (renovated)",
+  "type": "MEETING_ROOM",
+  "capacity": 10,
+  "location": "Floor 2",
+  "hourlyRate": 28.00
+}
+
+###
+
+# A USER trying to create a space gets 403
+POST {{baseUrl}}/api/v1/spaces
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Content-Type: application/json
+
+{ "name": "Not allowed", "type": "DESK", "capacity": 1, "location": "Floor 1", "hourlyRate": 5 }
+
+### ---------------------------------------------------------------
+### 3. Reservations
+### ---------------------------------------------------------------
+
+# @name reservation1
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: create-res1-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-10T15:00:00Z", "endAt": "2031-03-10T17:00:00Z" }
+
+###
+
+# Overlapping slot in the same space -> 409
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: create-overlap-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-10T16:00:00Z", "endAt": "2031-03-10T18:00:00Z" }
+
+###
+
+# A USER sees only their reservations; an ADMIN sees all of them
+GET {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+###
+
+GET {{baseUrl}}/api/v1/reservations/{{reservation1.response.body.$.id}}
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+### ---------------------------------------------------------------
+### 4. Confirming a reservation (payment validation)
+### The payment service is simulated; the payment method picks its behavior:
+###   CARD_OK        -> 200, reservation CONFIRMED
+###   CARD_DECLINED  -> 402, reservation stays PENDING_PAYMENT
+###   CARD_ERROR     -> 202, provider fails: circuit breaker fallback, stays PENDING_PAYMENT
+###   CARD_SLOW      -> 202, provider exceeds the read timeout (~2 s): fallback, stays PENDING_PAYMENT
+### ---------------------------------------------------------------
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation1.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-r1-ok-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+###
+
+# @name reservation2
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: create-res2-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-11T15:00:00Z", "endAt": "2031-03-11T16:00:00Z" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-r2-declined-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_DECLINED" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-r2-error-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_ERROR" }
+
+###
+
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-r2-slow-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_SLOW" }
+
+###
+
+# Cancel (owner or ADMIN)
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/cancel
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+###
+
+# A second cancel returns 409
+POST {{baseUrl}}/api/v1/reservations/{{reservation2.response.body.$.id}}/cancel
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+
+### ---------------------------------------------------------------
+### 4b. Idempotent retries (Idempotency-Key)
+### Send the same key to retry safely after a lost response: the original response is
+### replayed (header "Idempotent-Replayed: true") and nothing runs twice.
+### Same key + a different request -> 422. Keys are scoped per user and expire after 24 h.
+### ---------------------------------------------------------------
+
+# @name idemReservation
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: idem-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-20T15:00:00Z", "endAt": "2031-03-20T17:00:00Z" }
+
+###
+
+# Send it again: 201 with the SAME reservation id and "Idempotent-Replayed: true"
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: idem-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-20T15:00:00Z", "endAt": "2031-03-20T17:00:00Z" }
+
+###
+
+# Same key, different request -> 422
+POST {{baseUrl}}/api/v1/reservations
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: idem-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "spaceId": "{{createSpace.response.body.$.id}}", "startAt": "2031-03-21T15:00:00Z", "endAt": "2031-03-21T17:00:00Z" }
+
+###
+
+# Confirm twice with the same key: the payment provider is called only once
+POST {{baseUrl}}/api/v1/reservations/{{idemReservation.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-idem-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+###
+
+# Replayed response (header "Idempotent-Replayed: true")
+POST {{baseUrl}}/api/v1/reservations/{{idemReservation.response.body.$.id}}/confirm
+Authorization: Bearer {{userLogin.response.body.$.accessToken}}
+Idempotency-Key: confirm-idem-{{createSpace.response.body.$.id}}
+Content-Type: application/json
+
+{ "paymentMethod": "CARD_OK" }
+
+### ---------------------------------------------------------------
+### 5. Occupancy report (ADMIN, cached, uses the configured business hours)
+### ---------------------------------------------------------------
+
+GET {{baseUrl}}/api/v1/reports/occupancy?from=2031-03-10&to=2031-03-16
+Authorization: Bearer {{adminLogin.response.body.$.accessToken}}
+
+### ---------------------------------------------------------------
+### 6. Operations
+### ---------------------------------------------------------------
+
+GET {{baseUrl}}/actuator/health
+
+###
+
+# Full health details (including the payment circuit breaker) require ADMIN
+GET {{baseUrl}}/actuator/health
+Authorization: Bearer {{adminLogin.response.body.$.accessToken}}
+
+###
+
+GET {{baseUrl}}/actuator/circuitbreakers
+
+###
+
+GET {{baseUrl}}/actuator/metrics/http.server.requests
+Authorization: Bearer {{adminLogin.response.body.$.accessToken}}
+
+###
+
+# OpenAPI document (Swagger UI: {{baseUrl}}/swagger-ui/index.html)
+GET {{baseUrl}}/v3/api-docs

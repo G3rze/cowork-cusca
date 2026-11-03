@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: cowork
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  threads:
+    virtual:
+      enabled: true
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      # Loads lazy collections/associations in batches instead of one query per row (N+1 guard)
+      hibernate.default_batch_fetch_size: 20
+  datasource:
+    hikari:
+      maximum-pool-size: 10
+      connection-timeout: 3000
+      # Logs a stack trace if a connection is held longer than this (finds leaks and long transactions)
+      leak-detection-threshold: 20000
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+app:
+  # Daily operating window: denominator of the occupancy report (times are in the given zone)
+  business-hours:
+    opening: ${APP_BUSINESS_OPENING:08:00}
+    closing: ${APP_BUSINESS_CLOSING:18:00}
+    zone: ${APP_BUSINESS_ZONE:America/El_Salvador}
+  payment:
+    base-url: ${APP_PAYMENT_BASE_URL:http://localhost:8080/mock/payments}
+    connect-timeout: 1s
+    read-timeout: 2s
+    # Serves the in-app payment mock. Turn it off when base-url points to a real provider.
+    mock-enabled: ${APP_PAYMENT_MOCK_ENABLED:true}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        register-health-indicator: true
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 1s
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        # A full bulkhead is load shedding, not a sign that the payment service is unhealthy
+        ignore-exceptions:
+          - io.github.resilience4j.bulkhead.BulkheadFullException
+  bulkhead:
+    instances:
+      payment:
+        max-concurrent-calls: 10
+        max-wait-duration: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,circuitbreakers
+  endpoint:
+    health:
+      show-details: when-authorized
+      roles: ADMIN
+  health:
+    circuitbreakers:
+      enabled: true
+
+spring.cache:
+  type: caffeine
+  cache-names: occupancy
+  caffeine:
+    # Safety net: entries are also evicted explicitly whenever a reservation changes
+    spec: maximumSize=200,expireAfterWrite=10m
+
+app.idempotency:
+  ttl: 24h
+  processing-timeout: 2m
+  cleanup-interval: PT1H
+
+app.outbox:
+  poll-interval: PT2S
+  batch-size: 20
+  # Must exceed the time one delivery takes; after it another worker may take the event over
+  lease: PT1M
+  max-attempts: 8
+  base-backoff: PT5S
+  max-backoff: PT10M
+  retention: P7D

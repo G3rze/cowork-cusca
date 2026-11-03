@@ -1,0 +1,21 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/cowork}
+    username: ${SPRING_DATASOURCE_USERNAME:cowork}
+    password: ${SPRING_DATASOURCE_PASSWORD:cowork}
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    com.gerson.cowork: DEBUG
+
+app:
+  jwt:
+    # Development-only key (Base64, 384 bits). Never reuse outside local development.
+    secret: ${APP_JWT_SECRET:CUCiEooZn0aVNhYi9IZBgZIiJCGqdMiSpiVbmSonHuinjgGgthYoWaRxloNACwZP}
+    expiration: 1h
+  admin:
+    name: Administrator
+    email: ${APP_ADMIN_EMAIL:admin@cowork.local}
+    password: ${APP_ADMIN_PASSWORD:Admin12345!}

@@ -1,0 +1,40 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cowork-db
+    environment:
+      POSTGRES_DB: cowork
+      POSTGRES_USER: cowork
+      POSTGRES_PASSWORD: cowork
+    # Log sessions that wait on a lock longer than deadlock_timeout (1s), to spot contention
+    command: ["postgres", "-c", "log_lock_waits=on"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cowork -d cowork"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: cowork-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/cowork
+      SPRING_DATASOURCE_USERNAME: cowork
+      SPRING_DATASOURCE_PASSWORD: cowork
+      # Demo values for local evaluation only; use a secret manager in a real deployment
+      APP_JWT_SECRET: CUCiEooZn0aVNhYi9IZBgZIiJCGqdMiSpiVbmSonHuinjgGgthYoWaRxloNACwZP
+      APP_ADMIN_EMAIL: admin@cowork.local
+      APP_ADMIN_PASSWORD: Admin12345!
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
